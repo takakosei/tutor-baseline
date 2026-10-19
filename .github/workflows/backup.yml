@@ -1,0 +1,84 @@
+# Weekly database backup (structure + data of every table in public, plus the migration history). See docs/backup.md
+#
+# Needs two GitHub Secrets (repository Settings → Secrets and variables → Actions):
+#   SUPABASE_DB_URL    the "Session pooler" connection string from Connect in the Supabase dashboard (with the database password).
+#                      GitHub runners only have IPv4 and cannot reach the direct host (db.xxx.supabase.co), so use the pooler
+#   BACKUP_PASSPHRASE  the passphrase that encrypts the backup (a long one, kept in a password manager; without it the backup cannot be decrypted)
+# The backup contains students' internal notes and parent links, so it is encrypted before upload and no plaintext is kept.
+# Run it only in a private repository: artifacts of a public repository can be downloaded by anyone.
+# GitHub emails a notification when a scheduled run fails (the default for scheduled workflows).
+
+name: Database backup
+
+on:
+  schedule:
+    - cron: '0 18 * * 0' # Mondays 03:00 (Tokyo)
+  workflow_dispatch: {} # can also be run by hand from the Actions page
+
+permissions:
+  contents: read
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Dump the database
+        env:
+          DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DB_URL}" ]; then echo "::error::SUPABASE_DB_URL is not set (see docs/backup.md)"; exit 1; fi
+          # Supabase's Connect dialog shows a line like DIRECT_URL="postgresql://…", which often gets pasted with the quotes
+          case "$DB_URL" in
+            postgresql://*|postgres://*) ;;
+            *) echo "::error::SUPABASE_DB_URL must start with postgresql://: paste only the part inside the quotes, without DIRECT_URL= or the quotes"; exit 1 ;;
+          esac
+          case "$DB_URL" in
+            *:6543/*) echo "::error::SUPABASE_DB_URL uses port 6543 (transaction pooler); use the port 5432 one (session pooler, DIRECT_URL)"; exit 1 ;;
+          esac
+          docker pull -q postgres:17 > /dev/null
+          # The server runs Postgres 17, so use pg_dump from the same major version. The connection string reaches the
+          # container as an environment variable and never appears on a command line
+          if ! docker run --rm -e DB_URL postgres:17 \
+            sh -c 'pg_dump "$DB_URL" --no-owner --schema=public --schema=supabase_migrations' > backup.sql 2> pg_dump.err; then
+            # Show the reason on the run's summary page (Annotations) and in the notification email.
+            # Anything in quotes (host, user name, and possibly part of the password if the string is malformed) is removed
+            reason=$(sed '/^[[:space:]]*$/d' pg_dump.err | tail -n 3 | sed -E 's/"[^"]*"/"…"/g' | tr '\n' ' ')
+            case "$reason" in
+              *"password authentication failed"*) hint="Wrong database password: copy the connection string again from Connect → Session pooler, fill in the current password and update SUPABASE_DB_URL" ;;
+              *"Tenant or user not found"*) hint="Wrong user name or host in the connection string: use the one from Connect → Session pooler (the user name is postgres.<project id>)" ;;
+              *"Network is unreachable"*|*"could not translate host name"*) hint="Cannot reach this host: use the Session pooler string, not the direct one (db.….supabase.co); if the password contains characters such as @ / # ?, reset it to letters and digits only" ;;
+              *) hint="The dump failed" ;;
+            esac
+            echo "::error::${hint}. pg_dump said: ${reason}"
+            exit 1
+          fi
+          # Sanity check: the main tables are present and have data; otherwise fail the run (which sends a notification email)
+          for t in students lessons schedules metrics metric_records; do
+            grep -q "CREATE TABLE public.${t} " backup.sql || { echo "::error::The backup has no ${t} table"; exit 1; }
+            grep -q "^COPY public.${t} " backup.sql || { echo "::error::The backup has no data for ${t}"; exit 1; }
+          done
+          echo "Dumped $(wc -c < backup.sql) bytes"
+
+      - name: Compress and encrypt
+        env:
+          PASSPHRASE: ${{ secrets.BACKUP_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          if [ -z "${PASSPHRASE}" ]; then echo "::error::BACKUP_PASSPHRASE is not set (see docs/backup.md)"; exit 1; fi
+          gzip -9 backup.sql
+          # openssl (the one that ships with macOS can decrypt it: see docs/backup.md). The passphrase is read from the
+          # environment and never appears on a command line
+          openssl enc -aes-256-cbc -salt -pbkdf2 -iter 200000 -md sha256 -pass env:PASSPHRASE \
+            -in backup.sql.gz -out "backup-$(TZ=Asia/Tokyo date +%F).sql.gz.enc"
+          rm backup.sql.gz
+          ls -l backup-*.enc
+
+      - name: Upload (kept for 90 days)
+        uses: actions/upload-artifact@v7
+        with:
+          name: db-backup
+          path: backup-*.sql.gz.enc
+          retention-days: 90
+          if-no-files-found: error

@@ -1,0 +1,72 @@
+@import "tailwindcss";
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+
+  /* Analytics charts. An attention scale (one hue; the stronger the contrast with the background, the more attention
+     needed), validated in both modes with dataviz's validate_palette.js --ordinal. No red/green: indistinguishable for deutans */
+  --viz-attn-1: #86b6ef;
+  --viz-attn-2: #2a78d6;
+  --viz-attn-3: #104281;
+  --viz-bar: #2a78d6;
+  --viz-track: #e1e0d9;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+
+    /* Steps chosen separately for dark mode (not an automatic inversion): the end nearest the background is the faintest */
+    --viz-attn-1: #184f95;
+    --viz-attn-2: #3987e5;
+    --viz-attn-3: #9ec5f4;
+    --viz-bar: #3987e5;
+    --viz-track: #2c2c2a;
+  }
+}
+
+/* Unavailable times on the timetable: a hatch (grey for weekly, amber for one day only). Follows the foreground color in light and dark modes */
+@utility bg-hatch {
+  background-image: repeating-linear-gradient(
+    135deg,
+    color-mix(in oklab, var(--foreground) 22%, transparent) 0 1.5px,
+    transparent 1.5px 7px
+  );
+}
+@utility bg-hatch-amber {
+  background-image: repeating-linear-gradient(
+    135deg,
+    color-mix(in oklab, #d97706 55%, transparent) 0 1.5px,
+    transparent 1.5px 7px
+  );
+}
+
+/* Not bookable on the parent page timetable: a fine cross-hatch (a faint field of ×), with no reason shown */
+@utility bg-crosshatch {
+  background-image:
+    repeating-linear-gradient(45deg, color-mix(in oklab, var(--foreground) 9%, transparent) 0 1px, transparent 1px 8px),
+    repeating-linear-gradient(-45deg, color-mix(in oklab, var(--foreground) 9%, transparent) 0 1px, transparent 1px 8px);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+/* Printing (tuition statement → PDF) is always light: no black background even when the system uses dark mode */
+@media print {
+  :root {
+    --background: #ffffff;
+    --foreground: #171717;
+  }
+}
